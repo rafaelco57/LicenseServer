@@ -1,6 +1,5 @@
-FROM python:3.9-slim
+FROM python:3.9
 WORKDIR /app
 COPY . .
 RUN pip install -r requirements.txt
-EXPOSE 8000
-CMD ["uvicorn", "License_Server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "src.License_Server:app", "--host", "0.0.0.0", "--port", "8000"]
