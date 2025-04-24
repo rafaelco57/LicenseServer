@@ -1,9 +1,9 @@
 version: 1.0
-runtime: python3
+runtime: docker
 build:
   commands:
-    - "pip install -r requirements.txt"
+    - "docker build -t licensemanager ."
 run:
-  command: "uvicorn License_Server:app --host 0.0.0.0 --port 8000"
+  command: "docker run -p 8000:8000 licensemanager"
 network:
   port: 8000
