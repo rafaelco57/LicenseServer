@@ -194,16 +194,29 @@ async def create_user_session(request: Request):
             logging.info(f"Sessão {data['guid']} criada para o cliente {nome_cliente}")
             return {"status": "success", "message": "Session created successfully"}
 
-    except psycopg2_errors.UniqueViolation:
-        raise HTTPException(
+    except psycopg2_errors.UniqueViolation as e:
+        logging.warning(f"Tentativa de duplicação: {str(e)}")
+        return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Session already exists"
+            content={
+                "status": "error",
+                "error": "duplicate_session",
+                "message": "Sessão já existe",
+                "details": {
+                    "guid": data['guid'],
+                    "client_id": id_cliente
+                }
+            }
         )
     except Exception as e:
-        logging.error(f"Erro ao criar sessão: {str(e)}")
+        logging.error(f"Erro ao criar sessão: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
+            detail={
+                "status": "error",
+                "message": "Erro interno no servidor",
+                "error_code": "internal_error"
+            }
         )
 
 
@@ -223,18 +236,20 @@ async def update_user_session(guid: str, request: Request):
         with get_db_cursor() as cursor:
             id_cliente = get_cliente_id(nome_cliente)
 
-            # Verifica se a sessão existe
             cursor.execute(
                 "SELECT guid FROM user_sessions WHERE guid = %s AND id_cliente = %s",
                 (guid, id_cliente)
             )
             if not cursor.fetchone():
-                raise HTTPException(
+                return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Session not found"
+                    content={
+                        "status": "error",
+                        "error": "session_not_found",
+                        "message": "Sessão não encontrada"
+                    }
                 )
 
-            # Atualiza a sessão
             cursor.execute(
                 sql.SQL("""
                     UPDATE user_sessions
@@ -252,10 +267,14 @@ async def update_user_session(guid: str, request: Request):
             return {"status": "success", "message": "Session updated successfully"}
 
     except Exception as e:
-        logging.error(f"Erro ao atualizar sessão: {str(e)}")
+        logging.error(f"Erro ao atualizar sessão: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
+            detail={
+                "status": "error",
+                "message": "Erro interno no servidor",
+                "error_code": "internal_error"
+            }
         )
 
 
