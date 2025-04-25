@@ -1,5 +1,17 @@
-FROM python:3.9
+# Imagem base
+FROM python:3.11-slim
+
+# Diretório de trabalho
 WORKDIR /app
+
+# Copiar arquivos
 COPY . .
-RUN pip install -r requirements.txt
-CMD ["python", "-m", "uvicorn", "src.License_Server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Instalar dependências
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Expor a porta que a FastAPI usará
+EXPOSE 5000
+
+# Comando para iniciar o servidor
+CMD ["uvicorn", "aws_service_fastapi:app", "--host", "0.0.0.0", "--port", "5000"]
