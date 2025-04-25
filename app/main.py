@@ -83,20 +83,33 @@ def get_db_connection():
 
 @contextmanager
 def get_db_cursor():
-    """Context manager para gerenciar cursors de banco de dados"""
-    with get_db_connection() as conn:
-        cursor = None
-        try:
-            cursor = conn.cursor()
-            yield cursor
-            conn.commit()
-        except Exception as e:
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = False
+        cursor = conn.cursor()
+        yield cursor
+        conn.commit()
+    except psycopg2_errors.UniqueViolation as e:
+        conn.rollback()
+        # Convertemos para um erro HTTP no próprio cursor
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "type": "db_error",
+                "code": "unique_violation",
+                "message": "Violação de chave única",
+                "constraint": str(e).split("\n")[0]
+            }
+        ) from e
+    except Exception as e:
+        if conn:
             conn.rollback()
-            logging.error(f"Erro no banco de dados: {str(e)}")
-            raise
-        finally:
-            if cursor:
-                cursor.close()
+        logging.error(f"Database error: {str(e)}")
+        raise
+    finally:
+        if conn:
+            conn.close()
 
 
 # Funções Auxiliares
@@ -190,57 +203,32 @@ async def unique_violation_exception_handler(request: Request, exc: psycopg2_err
     )
 
 
-@app.post("/api/users-sessions", tags=["Sessions"], status_code=status.HTTP_201_CREATED)
+@app.post("/api/users-sessions", tags=["Sessions"])
 async def create_user_session(request: Request):
-    """Cria uma nova sessão de usuário"""
     data = await request.json()
     nome_cliente = data.get('client_name') or request.headers.get('X-Client-Name')
 
     if not nome_cliente:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "status": "error",
-                "error_type": "missing_client_name",
-                "message": "Nome do cliente não especificado"
-            }
-        )
+        raise HTTPException(status_code=400, detail="Client name required")
 
     try:
         with get_db_cursor() as cursor:
             id_cliente = get_cliente_id(nome_cliente)
+            cursor.execute("""
+                INSERT INTO user_sessions 
+                (guid, username, ip, id_user, id_cliente, dt_creation, dt_last_send)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (data['guid'], data['username'], data['ip'], data['idUser'],
+                      id_cliente, data['dtCreation'], data['dtLastSend']))
 
-            cursor.execute(
-                sql.SQL("""
-                    INSERT INTO user_sessions 
-                    (guid, username, ip, id_user, id_cliente, dt_creation, dt_last_send)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """),
-                (
-                    data['guid'],
-                    data['username'],
-                    data['ip'],
-                    data['idUser'],
-                    id_cliente,
-                    datetime.fromisoformat(data['dtCreation']),
-                    datetime.fromisoformat(data['dtLastSend'])
-                )
-            )
+        return {"status": "success"}
 
-            logging.info(f"Sessão {data['guid']} criada para o cliente {nome_cliente}")
-            return {
-                "status": "success",
-                "message": "Session created successfully",
-                "session_data": {
-                    "guid": data['guid'],
-                    "client_id": id_cliente
-                }
-            }
-
+    except HTTPException as e:
+        # Re-passamos exceções HTTP diretamente
+        raise e
     except Exception as e:
-        # Erros não tratados serão capturados pelo handler global
-        logging.error(f"Erro não tratado ao criar sessão: {str(e)}", exc_info=True)
-        raise
+        logging.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.put("/api/users-sessions/{guid}", tags=["Sessions"])
