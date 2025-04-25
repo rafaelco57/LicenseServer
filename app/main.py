@@ -158,6 +158,38 @@ async def health_check():
         )
 
 
+# Configuração global de exception handler
+@app.exception_handler(psycopg2_errors.UniqueViolation)
+async def unique_violation_exception_handler(request: Request, exc: psycopg2_errors.UniqueViolation):
+    """Handler global para erros de violação de unicidade"""
+    error_details = str(exc).split('\n')
+    guid = None
+    client_id = None
+
+    # Extrai GUID e client_id da mensagem de erro quando possível
+    for detail in error_details:
+        if "Key (guid, id_cliente)=" in detail:
+            parts = detail.split('=')[1].strip('()').split(',')
+            guid = parts[0].strip()
+            client_id = parts[1].strip()
+
+    logging.warning(f"Conflito de chave única - GUID: {guid}, Client ID: {client_id}")
+
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "status": "error",
+            "error_type": "duplicate_session",
+            "message": "Sessão já existe para este cliente",
+            "details": {
+                "guid": guid,
+                "client_id": client_id,
+                "db_error": error_details[0]
+            }
+        }
+    )
+
+
 @app.post("/api/users-sessions", tags=["Sessions"], status_code=status.HTTP_201_CREATED)
 async def create_user_session(request: Request):
     """Cria uma nova sessão de usuário"""
@@ -167,7 +199,11 @@ async def create_user_session(request: Request):
     if not nome_cliente:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Nome do cliente não especificado"
+            detail={
+                "status": "error",
+                "error_type": "missing_client_name",
+                "message": "Nome do cliente não especificado"
+            }
         )
 
     try:
@@ -192,32 +228,19 @@ async def create_user_session(request: Request):
             )
 
             logging.info(f"Sessão {data['guid']} criada para o cliente {nome_cliente}")
-            return {"status": "success", "message": "Session created successfully"}
-
-    except psycopg2_errors.UniqueViolation as e:
-        logging.warning(f"Tentativa de duplicação: {str(e)}")
-        return JSONResponse(
-            status_code=status.HTTP_409_CONFLICT,
-            content={
-                "status": "error",
-                "error": "duplicate_session",
-                "message": "Sessão já existe",
-                "details": {
+            return {
+                "status": "success",
+                "message": "Session created successfully",
+                "session_data": {
                     "guid": data['guid'],
                     "client_id": id_cliente
                 }
             }
-        )
+
     except Exception as e:
-        logging.error(f"Erro ao criar sessão: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "status": "error",
-                "message": "Erro interno no servidor",
-                "error_code": "internal_error"
-            }
-        )
+        # Erros não tratados serão capturados pelo handler global
+        logging.error(f"Erro não tratado ao criar sessão: {str(e)}", exc_info=True)
+        raise
 
 
 @app.put("/api/users-sessions/{guid}", tags=["Sessions"])
@@ -229,7 +252,11 @@ async def update_user_session(guid: str, request: Request):
     if not nome_cliente:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Nome do cliente não especificado"
+            detail={
+                "status": "error",
+                "error_type": "missing_client_name",
+                "message": "Nome do cliente não especificado"
+            }
         )
 
     try:
@@ -245,8 +272,12 @@ async def update_user_session(guid: str, request: Request):
                     status_code=status.HTTP_404_NOT_FOUND,
                     content={
                         "status": "error",
-                        "error": "session_not_found",
-                        "message": "Sessão não encontrada"
+                        "error_type": "session_not_found",
+                        "message": "Sessão não encontrada",
+                        "details": {
+                            "guid": guid,
+                            "client_id": id_cliente
+                        }
                     }
                 )
 
@@ -264,7 +295,14 @@ async def update_user_session(guid: str, request: Request):
             )
 
             logging.info(f"Sessão {guid} atualizada para o cliente {nome_cliente}")
-            return {"status": "success", "message": "Session updated successfully"}
+            return {
+                "status": "success",
+                "message": "Session updated successfully",
+                "updated_session": {
+                    "guid": guid,
+                    "last_updated": data['dtLastSend']
+                }
+            }
 
     except Exception as e:
         logging.error(f"Erro ao atualizar sessão: {str(e)}", exc_info=True)
@@ -272,8 +310,8 @@ async def update_user_session(guid: str, request: Request):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
                 "status": "error",
-                "message": "Erro interno no servidor",
-                "error_code": "internal_error"
+                "error_type": "internal_server_error",
+                "message": "Erro interno no processamento da requisição"
             }
         )
 
