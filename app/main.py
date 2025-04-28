@@ -83,33 +83,20 @@ def get_db_connection():
 
 @contextmanager
 def get_db_cursor():
-    conn = None
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        conn.autocommit = False
-        cursor = conn.cursor()
-        yield cursor
-        conn.commit()
-    except psycopg2_errors.UniqueViolation as e:
-        conn.rollback()
-        # Convertemos para um erro HTTP no próprio cursor
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "type": "db_error",
-                "code": "unique_violation",
-                "message": "Violação de chave única",
-                "constraint": str(e).split("\n")[0]
-            }
-        ) from e
-    except Exception as e:
-        if conn:
+    """Context manager para gerenciar cursors de banco de dados"""
+    with get_db_connection() as conn:
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            yield cursor
+            conn.commit()
+        except Exception as e:
             conn.rollback()
-        logging.error(f"Database error: {str(e)}")
-        raise
-    finally:
-        if conn:
-            conn.close()
+            logging.error(f"Erro no banco de dados: {str(e)}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
 
 
 # Funções Auxiliares
@@ -171,64 +158,73 @@ async def health_check():
         )
 
 
-# Configuração global de exception handler
-@app.exception_handler(psycopg2_errors.UniqueViolation)
-async def unique_violation_exception_handler(request: Request, exc: psycopg2_errors.UniqueViolation):
-    """Handler global para erros de violação de unicidade"""
-    error_details = str(exc).split('\n')
-    guid = None
-    client_id = None
-
-    # Extrai GUID e client_id da mensagem de erro quando possível
-    for detail in error_details:
-        if "Key (guid, id_cliente)=" in detail:
-            parts = detail.split('=')[1].strip('()').split(',')
-            guid = parts[0].strip()
-            client_id = parts[1].strip()
-
-    logging.warning(f"Conflito de chave única - GUID: {guid}, Client ID: {client_id}")
-
-    return JSONResponse(
-        status_code=status.HTTP_409_CONFLICT,
-        content={
-            "status": "error",
-            "error_type": "duplicate_session",
-            "message": "Sessão já existe para este cliente",
-            "details": {
-                "guid": guid,
-                "client_id": client_id,
-                "db_error": error_details[0]
-            }
-        }
-    )
-
-
-@app.post("/api/users-sessions", tags=["Sessions"])
+@app.post("/api/users-sessions", tags=["Sessions"], status_code=status.HTTP_201_CREATED)
 async def create_user_session(request: Request):
+    """Cria uma nova sessão de usuário com verificação de existência prévia"""
     data = await request.json()
     nome_cliente = data.get('client_name') or request.headers.get('X-Client-Name')
 
     if not nome_cliente:
-        raise HTTPException(status_code=400, detail="Client name required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nome do cliente não especificado"
+        )
 
     try:
         with get_db_cursor() as cursor:
             id_cliente = get_cliente_id(nome_cliente)
-            cursor.execute("""
-                INSERT INTO user_sessions 
-                (guid, username, ip, id_user, id_cliente, dt_creation, dt_last_send)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (data['guid'], data['username'], data['ip'], data['idUser'],
-                      id_cliente, data['dtCreation'], data['dtLastSend']))
 
-        return {"status": "success"}
+            # Verifica se a sessão já existe
+            cursor.execute(
+                "SELECT 1 FROM user_sessions WHERE guid = %s AND id_cliente = %s",
+                (data['guid'], id_cliente)
+            )
 
-    except HTTPException as e:
-        # Re-passamos exceções HTTP diretamente
-        raise e
+            if cursor.fetchone():
+                logging.warning(f"Tentativa de criar sessão duplicada: {data['guid']}")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "session_already_exists",
+                        "message": "Sessão já registrada para este cliente",
+                        "guid": data['guid'],
+                        "client_id": id_cliente
+                    }
+                )
+
+            # Se não existir, faz o insert
+            cursor.execute(
+                sql.SQL("""
+                    INSERT INTO user_sessions 
+                    (guid, username, ip, id_user, id_cliente, dt_creation, dt_last_send)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """),
+                (
+                    data['guid'],
+                    data['username'],
+                    data['ip'],
+                    data['idUser'],
+                    id_cliente,
+                    datetime.fromisoformat(data['dtCreation']),
+                    datetime.fromisoformat(data['dtLastSend'])
+                )
+            )
+
+            logging.info(f"Sessão {data['guid']} criada para o cliente {nome_cliente}")
+            return {
+                "status": "success",
+                "message": "Session created successfully",
+                "session_id": data['guid']
+            }
+
+    except HTTPException:
+        raise  # Re-lança exceções HTTP que já tratamos
     except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logging.error(f"Erro ao criar sessão: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
 
 
 @app.put("/api/users-sessions/{guid}", tags=["Sessions"])
