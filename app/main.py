@@ -352,6 +352,10 @@ async def delete_user_session(guid: str, request: Request):
             logging.info(f"Sessão {guid} movida para o histórico")
             return {"status": "success", "message": "Session deleted successfully"}
 
+    except HTTPException:
+        # Re-raise HTTPException (como a de 404) para que seja retornada como está
+        raise
+
     except Exception as e:
         logging.error(f"Erro ao deletar sessão: {str(e)}")
         raise HTTPException(
