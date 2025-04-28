@@ -12,6 +12,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 import atexit
+from starlette.responses import JSONResponse
 
 # Configuração do aplicativo FastAPI
 app = FastAPI(
