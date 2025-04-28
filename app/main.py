@@ -307,16 +307,19 @@ async def delete_user_session(guid: str, request: Request):
     nome_cliente = request.headers.get('X-Client-Name')
 
     if not nome_cliente:
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Header X-Client-Name é obrigatório"
+            content={
+                "status": "error",
+                "error_type": "missing_client_name",
+                "message": "Header X-Client-Name é obrigatório"
+            }
         )
 
     try:
         with get_db_cursor() as cursor:
             id_cliente = get_cliente_id(nome_cliente)
 
-            # Busca a sessão para mover ao histórico
             cursor.execute(
                 """
                 SELECT guid, username, ip, id_user, id_cliente, dt_creation, dt_last_send
@@ -328,9 +331,17 @@ async def delete_user_session(guid: str, request: Request):
             session = cursor.fetchone()
 
             if not session:
-                raise HTTPException(
+                return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Session not found"
+                    content={
+                        "status": "error",
+                        "error_type": "session_not_found",
+                        "message": "Session not found",
+                        "details": {
+                            "guid": guid,
+                            "client_id": id_cliente
+                        }
+                    }
                 )
 
             # Move para o histórico
@@ -350,17 +361,20 @@ async def delete_user_session(guid: str, request: Request):
             )
 
             logging.info(f"Sessão {guid} movida para o histórico")
-            return {"status": "success", "message": "Session deleted successfully"}
-
-    except HTTPException:
-        # Re-raise HTTPException (como a de 404) para que seja retornada como está
-        raise
+            return {
+                "status": "success",
+                "message": "Session deleted successfully"
+            }
 
     except Exception as e:
-        logging.error(f"Erro ao deletar sessão: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
+        logging.error(f"Erro ao deletar sessão: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "error_type": "database_error",
+                "message": "Database connection error"
+            }
         )
 
 
